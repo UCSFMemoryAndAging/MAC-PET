@@ -86,4 +86,3 @@ for incl_con = 0:1
         delete(axial_name); delete(sagittal_name); delete(coronal_name);
     end
 end
-delete('i2s*.mat'); delete('yxratio_*.mat');

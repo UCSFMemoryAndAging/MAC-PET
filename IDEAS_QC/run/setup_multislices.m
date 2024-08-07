@@ -116,4 +116,5 @@ function setup_multislices(input_dir, roi_dir, output_dir, overwrite)
         end
        
     end
+    delete('i2s*.mat'); delete('yxratio_*.mat');
 end
