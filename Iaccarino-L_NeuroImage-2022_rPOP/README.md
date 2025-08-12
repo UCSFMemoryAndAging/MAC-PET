@@ -1,5 +1,5 @@
 # Welcome to robust PET-Only Processing, aka rPOP!
-In this repository you will find everything you need to run rPOP.
+In this repository you will find everything you need to run rPOP. This directory is copied from originally published repository here: https://github.com/LeoIacca/rPOP
 
 ## Licensing
 
