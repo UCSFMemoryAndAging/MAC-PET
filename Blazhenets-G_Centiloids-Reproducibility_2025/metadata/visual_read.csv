@@ -1,0 +1,16 @@
+﻿name_in,name_out
+0,negative
+1,positive
+neg,negative
+pos,positive
+VR-,negative
+VR+,positive
+A-,negative
+A+,positive
+neg-,negative
+pos+,positive
+negative,negative
+positive,positive
+non-elevated,negative
+elevated,positive
+nonelevated,negative

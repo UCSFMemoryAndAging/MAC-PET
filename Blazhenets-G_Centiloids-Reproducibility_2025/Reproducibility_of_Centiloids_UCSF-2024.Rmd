@@ -1,0 +1,1227 @@
+---
+title: "Reproducibility of Centiloids"
+author: "UCSF; version 2.05"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r cohort, include=FALSE}
+
+#INPUT 1: Please provide the full path to comma-separated .csv file with the Amyloid PET biomarkers and demographics/cognitive/genetic data in the following format:'/Users/user/projects/cohort_centiloids.csv'. Please note the variables in the spreadsheet MUST BE named according to the example provided in demo. 
+
+###NOTE: if you re-run analysis please provide the full path to the '*_prepared_dataset_*.csv' generated with the previous run.
+
+filename='demo/demo_data.csv' # run demo cohort as example
+
+#INPUT 2: Please provide cohort's label in the following format: e.g., 'IDEAS'
+cohort='Demo' # run demo cohort as example
+
+#Once the information provided here click 'Save' and then 'Knit'. If any problems with knitting, please try Run All first and then Knit.
+
+```
+
+# Cohort: `r cohort`
+
+```{r setup, include=FALSE,  echo=F, message=FALSE, results='hide'}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+source("code/load_libraries.R")
+source("code/prep_baseline_data.R")
+
+# Check if the provided .csv exists
+if (file.exists(filename)) {
+  dataset<-read.csv(filename, sep=",", na.strings=c("","n/a","NA","NaN","na"))
+} else {
+ stop("Provided .csv does not exist.")
+}
+
+# Check that minimal set of required variables exist
+required_columns <- c("id", "cl", "tracer", "male", "age") # additional but not required columns: "dx", "mmse", "cdr", "apoe", "visual_read"
+missing_columns <- setdiff(required_columns, names(dataset))
+if (length(missing_columns) > 0) {
+  stop("The following required columns are missing:", paste(missing_columns, collapse = ", "), "\n")
+}
+
+# If this is the first time processing the cohort, format the dataset to a specific format
+if (grepl('prepared_dataset', filename)==F) {
+  dataset<-prep_baseline_data(dataset)
+  
+  #save prepared dataset for future reference; do not share this output file [contains individual data].
+  write.csv(dataset,paste0(cohort,'_prepared_dataset_',format(Sys.Date(), "%Y-%m-%d"), ".csv"))
+}
+```
+
+## Chapter I: Gaussian Mixture Models
+
+#### Optimal number of components in GMM [1-5]
+
+```{r gaussian mixure models optimal number of k, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+# load required functions
+source("code/gmm_bic_criteria.R")
+source("code/gmm_aic_criteria.R")
+source("code/gmm_silhouette_criteria.R")
+source("code/gmm_icl_criteria.R")
+source("code/gmm_loglik_criteria.R")
+
+# examine various metrices to define best number of components in the dataset
+best_k_aic <- find_best_gmm_aic(dataset)
+best_k_loglik <- find_best_gmm_loglik(dataset)
+best_k_bic <- find_best_gmm_bic(dataset)
+best_k_sil <- find_best_gmm_silhouette(dataset)
+best_k_icl <- find_best_gmm_icl(dataset)
+
+# print the resulting table highlighting in bold the best fit
+k_selection <- t(data.frame(round(best_k_aic$aic_values,2),
+                            round(best_k_loglik$loglik_values,2),
+                          round(best_k_bic$bic_values,2),
+                          round(best_k_sil$silhouette_scores,2),
+                          round(best_k_icl$icl_values,2)))
+
+k_selection[1,best_k_aic$best_k]<-cell_spec(k_selection[1,best_k_aic$best_k], bold = T)
+k_selection[2,best_k_loglik$best_k]<-cell_spec(k_selection[2,best_k_loglik$best_k], bold = T)
+k_selection[3,best_k_bic$best_k]<-cell_spec(k_selection[3,best_k_bic$best_k], bold = T)
+k_selection[4,best_k_sil$best_k]<-cell_spec(k_selection[4,best_k_sil$best_k], bold = T)
+k_selection[5,best_k_icl$best_k]<-cell_spec(k_selection[5,best_k_icl$best_k], bold = T)
+  
+colnames(k_selection)<-c("k = 1", "k = 2", "k = 3", "k = 4", "k = 5")
+rownames(k_selection)<-c("AIC criteria", "Log-likelihood criteria","BIC criteria", "Silhouette criteria", "ICL-based criteria")
+```
+
+```{r print selection table, echo=FALSE}
+kable(k_selection, format = "html", escape = FALSE)%>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = T)
+```
+
+#### GMM for CL distribution [random initialization, bootstrap, ECM algorithm]
+
+```{r gaussian mixure models, echo=F, results='hide',fig.keep='all', dpi = 600, fig.retina=1, fig.height=7, fig.width=10}
+pal <- c("#0099B499","#AA3929")
+source("code/gmm_fit.R")
+source("code/gmm_plot.R")
+
+# run bootstrap to estimate CI
+boot_results <- boot_gmm(dataset)
+
+# Fit GMM and create plots
+gmm<- fit_gmm(dataset$cl)
+plot_gmm<-create_gmm_plot_display(gmm$summary, gmm$density, gmm$gmm, cohort, boot_results)
+
+plot_gmm_save<-create_gmm_plot_save(gmm$summary, gmm$density, gmm$gmm, cohort, boot_results)
+file_savename <- paste0("output/Figure-1C_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+ggsave(plot_gmm_save,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+
+plot_gmm_save<-plot_gmm_save+
+  geom_vline(xintercept = gmm$gmm$mu[1]+2*gmm$gmm$sigma[1], color = "black", size = 0.5)+
+  geom_rect(aes(xmin=boot_results[[5]]$percent[4],xmax=boot_results[[5]]$percent[5], ymin=-Inf, ymax=Inf), fill="black", alpha=0.1)
+file_savename <- paste0("output/Figure-1A_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+ggsave(plot_gmm_save,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+
+plot_gmm_save<-plot_gmm_save+ylim(0,0.05)
+file_savename <- paste0("output/Figure-1B_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+ggsave(plot_gmm_save,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+
+print(plot_gmm)
+
+# Plot the posterior distribution function
+plot_posterior<-create_ppf_plot(gmm$summary, gmm)
+print(plot_posterior)
+```
+
+```{r print posterior table, echo=FALSE}
+# Print the results of analysis applying different cutoffs to the posterior density function 
+double_cutoff_table <- t(data.frame(rbind(gmm$cutoff_double_low,gmm$cutoff_double_high)))
+colnames(double_cutoff_table)<-c("Clearly negative cutoff", "Clearly positive cutoff")
+rownames(double_cutoff_table)<-c("Posterior probability [cutoff] = 0.50","Posterior probability [cutoff] = 0.60","Posterior probability [cutoff] = 0.70","Posterior probability [cutoff] = 0.80","Posterior probability [cutoff] = 0.90")
+kable(double_cutoff_table, format = "html", escape = FALSE)%>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = T)
+```
+
+```{r gaussian mixure models by tracer, echo=F, results='hide'}
+# Initialize a list to store results by radiotracer
+gmm_tracer <- list()
+boot_results_tracer<-list()
+
+for (tracer_name in unique(dataset$tracer)) {
+  if (length(unique(dataset$tracer))>1) {
+    # Subset the data for the current tracer
+    data <- subset(dataset, dataset$tracer == tracer_name)
+    
+    # Run bootstrap to estimate CI with error handling
+    boot_results_tracer[[tracer_name]] <- tryCatch({boot_gmm(data)}, 
+                                                   error = function(e) {
+                                                     message(paste("Error in boot_gmm for tracer:", tracer_name, "- Error message:", e$message)) 
+                                                     NA})
+    
+    # Fit GMM and create plots with error handling
+    gmm_tracer[[tracer_name]] <- tryCatch({fit_gmm(data$cl)},
+                                          error = function(e) {
+                                            message(paste("Error in fit_gmm for tracer:", tracer_name, "- Error message:", e$message))
+                                            NA})
+  } else {
+     boot_results_tracer[[tracer_name]]<-boot_results
+     gmm_tracer[[tracer_name]]<-gmm
+  }
+}
+```
+
+## Chapter II: Correspondence between quantification and visual read
+
+#### Cutoff based on maximizing kappa: correspondance between visual read and quantification
+
+```{r kappa and VR analysis, echo=F, results='hide', fig.keep='all', dpi = 600, fig.retina=1, fig.height=7, fig.width=10}
+source("code/visual_read_plot.R")
+pal2<-c("#0A9F9D","#9986A5")
+
+# extract cutoffs maximizing kappa
+if ("visual_read" %in% colnames(dataset)) {
+    data<-subset(dataset, is.na(dataset$visual_read)==F)
+    cutoff<-cutpointr(data, cl, visual_read, direction = ">=", pos_class = "positive",
+                    method = maximize_metric, metric = cohens_kappa, boot_runs=5000)
+
+  # Calculate standard error for the optimal cutpoint
+  kappa_calculated<-cutoff$cohens_kappa
+  cutoff_max_kappa<-cutoff$optimal_cutpoint
+  cutoff_max_kappa_ci<-quantile(cutoff$boot[[1]]$optimal_cutpoint, probs = c(0.025, 0.975))
+  kappa_calculated_ci<-quantile(cutoff$boot[[1]]$cohens_kappa_b, probs = c(0.025, 0.975))
+
+  #plot
+  vr_plot<-plot_vr(data,cohort,cutoff_max_kappa)
+  vr_save<-vr_plot+
+    theme(axis.text.x = element_text(size = 16),
+          axis.text.y = element_text(size = 16))+
+    xlab("")+
+    theme(axis.text.y=element_blank())
+
+  file_savename <- paste0("output/Figure-2A_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+  ggsave(vr_save,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+  
+  #plot
+  vr_kappa<-vr_save+
+    geom_vline(xintercept = cutoff_max_kappa, linetype = "dotted", color = "black", size = 1)
+
+  file_savename <- paste0("output/Figure-2B_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+  ggsave(vr_kappa,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+
+  vr_plot<-vr_plot+
+    annotate("text",x=cutoff_max_kappa+20, y = 2.5, label = paste(round(as.numeric(cutoff_max_kappa),1), "[Kappa = ", round(as.numeric(kappa_calculated),2),"]"), color = "black")+
+    geom_vline(xintercept = cutoff_max_kappa, linetype = "dotted", color = "black", size = 1) +
+    ggtitle(paste(cohort))
+    print(vr_plot)
+}
+```
+
+```{r kappa and VR analysis by tracer, echo=F, results='hide', fig.keep='all', dpi = 600, fig.retina=1, fig.height=7, fig.width=10}
+# extract kappa-based cutoffs for each tracer
+if ("visual_read" %in% colnames(dataset)) {
+    vr_tracer <- list()
+    for (tracer_name in unique(dataset$tracer)){
+        if (length(unique(dataset$tracer)>1)) {
+          data<-subset(dataset,dataset$tracer==tracer_name)
+          data<-subset(data, is.na(data$visual_read)==F)
+          vr_tracer[[tracer_name]]$cutoff<-tryCatch(
+            {cutpointr(data, cl, visual_read, direction = ">=",
+                pos_class = "positive",method = maximize_metric, metric = cohens_kappa, boot_runs=5000)},
+              error = function(e) {
+                message(paste("Error in calculate_cutoff for tracer:", tracer_name, "- Error message:", e$message))
+                NA}) 
+  
+          # Calculate standard error for the optimal cutpoint
+          vr_tracer[[tracer_name]]$kappa_calculated<-tryCatch(vr_tracer[[tracer_name]]$cutoff$cohens_kappa, error = function(e) NA)
+          vr_tracer[[tracer_name]]$cutoff_max_kappa<-tryCatch(vr_tracer[[tracer_name]]$cutoff$optimal_cutpoint, error = function(e) NA)
+          vr_tracer[[tracer_name]]$cutoff_max_kappa_ci<-tryCatch(quantile(vr_tracer[[tracer_name]]$cutoff$boot[[1]]$optimal_cutpoint, probs = c(0.025, 0.975)), error = function(e) NA)
+          vr_tracer[[tracer_name]]$kappa_calculated_ci<-tryCatch(quantile(vr_tracer[[tracer_name]]$cutoff$boot[[1]]$cohens_kappa_b, probs = c(0.025, 0.975)), error = function(e) NA)
+
+        } else {
+          vr_tracer[[tracer_name]]$cutoff<-cutoff
+          vr_tracer[[tracer_name]]$kappa_calculated<-kappa_calculated
+          vr_tracer[[tracer_name]]$cutoff_max_kappa<-cutoff_max_kappa
+          vr_tracer[[tracer_name]]$cutoff_max_kappa_ci<-cutoff_max_kappa_ci
+          vr_tracer[[tracer_name]]$kappa_calculated_ci<-kappa_calculated_ci
+        }
+    }
+}
+```
+
+#### Cutoff based on ROC AUC analysis with Youden index
+```{r roc, echo=F,  results='hide',fig.keep='all', dpi = 600, fig.retina=1, fig.height=7, fig.width=10}
+# Use ROC as an alternative methods to define VR-based cutoffs
+source('code/roc_calculate.R')
+if ("visual_read" %in% colnames(dataset)) {
+    data<-subset(dataset, is.na(dataset$visual_read)==F)
+    result_roc<- tryCatch({calculate_cutoff(data)},
+                          error = function(e) {
+                            message(paste("Error in calculate_cutoff for tracer:", tracer_name, "- Error message:", e$message))
+                            NA})
+
+    roc_plot<-create_roc_plot(result_roc$roc_curve, result_roc$cutoff_youden, cohort)
+
+    # add ROC cutoff to VR plot
+    vr_save<-vr_save+
+      theme(axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16))+
+      xlab("")+
+      theme(axis.text.y=element_blank())+
+      geom_vline(xintercept = result_roc$cutoff_youden$threshold,  linetype = "dotted", color = "black", size = 1)
+
+    file_savename <- paste0("output/Figure-2C_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+    ggsave(vr_save,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+
+    file_savename <- paste0("output/Figure-3_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+    ggsave(roc_plot,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+    print(roc_plot)
+}
+```
+
+```{r roc by tracer, echo=F,  results='hide'}
+# perform the ROC analyses by radiotracer
+if ("visual_read" %in% colnames(dataset)) {
+    roc_tracer <- list()
+    for (tracer_name in unique(dataset$tracer)){
+      if (n_distinct(as.factor(dataset$tracer))>1){
+        data<-subset(dataset,dataset$tracer==tracer_name)
+        data<-subset(data, is.na(data$visual_read)==F)
+        roc_tracer[[tracer_name]]$result_roc <- tryCatch({calculate_cutoff(data)},
+                                                         error = function(e) {
+                                                           message(paste("Error in calculate_cutoff for tracer:", tracer_name, "- Error message:", e$message)) 
+                                                           NA})
+      }
+    }
+}
+```
+
+## Chapter III: Association with non-imaging data
+
+#### Association with age and sex
+
+```{r basic demog, echo=F, fig.keep='all', dpi = 600, fig.retina=1, fig.height=7, fig.width=10}
+# Centiloid to age association with Pearson correlation test; Centiloid by sex with T-test
+source('code/basic_demog_plot.R')
+age1<-plot_age(dataset,cohort,'')
+file_savename <- paste0("output/Figure-4_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+ggsave(age1$age_plot,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+age1$age_plot<-age1$age_plot+stat_cor(method="pearson", size = 4, show.legend = F)
+text_disp <- paste0("Centiloid by age association: Pearson r - ",
+                    round(age1$correlation_age_cl$estimate, 3),
+                    ", p-value - ",
+                    format.pval(age1$correlation_age_cl$p.value, digits = 3),
+                    ".\n")
+
+model_age_full<-lm(cl~age, data=dataset)
+text_disp <- paste0(text_disp,
+                    "Centiloid by age association: intercept -  ",
+                    round(model_age_full$coefficients[1], 3),
+                    ", slope - ",
+                    round(model_age_full$coefficients[2], digits = 3),
+                    ", p-value - ",
+                    format.pval(summary(model_age_full)$coefficient[2,4], digits = 3),
+                    ".\n")
+
+if ("dx" %in% colnames(dataset)) {
+  age2<-plot_age(dataset,cohort,dataset$dx)
+  if (!is.null(age2$correlation_age_cl$cn)) {
+    file_savename <- paste0("output/Figure-4A_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+    ggsave(age2$age_plot,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+    age2$age_plot<-age2$age_plot+stat_cor(method="pearson",size = 4, show.legend = F)
+    text_disp <- paste0(text_disp,
+                        "Centiloid by age association in CN: Pearson r - ",
+                        round(age2$correlation_age_cl$cn$estimate, 3),
+                        ", p-value - ",
+                        format.pval(age2$correlation_age_cl$cn$p.value, digits = 3),
+                        ".\n")
+    text_disp <- paste0(text_disp,
+                        "Centiloid by age association in Cognitively Impaired: Pearson r - ",
+                        round(age2$correlation_age_cl$patient$estimate, 3),
+                        ", p-value - ",
+                        format.pval(age2$correlation_age_cl$patient$p.value, digits = 3),
+                        ".\n")
+
+    model_age_cn<-lm(cl~age, data=subset(dataset,dataset$dx=="CN"))
+    text_disp <- paste0(text_disp,
+                        "Centiloid by age association in CN: intercept -  ",
+                      round(model_age_cn$coefficients[1], 3),
+                      ", slope - ",
+                      round(model_age_cn$coefficients[2], digits = 3),
+                      ", p-value - ",
+                      format.pval(summary(model_age_cn)$coefficient[2,4], digits = 3),
+                      ".\n")
+
+    model_age_pt<-lm(cl~age, data=subset(dataset,dataset$dx!="CN"))
+    text_disp <- paste0(text_disp,
+                      "Centiloid by age association in Cognitively Impaired: intercept -  ",
+                      round(model_age_pt$coefficients[1], 3),
+                      ", slope - ",
+                      round(model_age_pt$coefficients[2], digits = 3),
+                      ", p-value - ",
+                      format.pval(summary(model_age_pt)$coefficient[2,4], digits = 3),
+                      ".\n")
+  }
+
+} else if ("cdr" %in% colnames(dataset)) {
+  age3<-plot_age(dataset,cohort,dataset$cdr)
+  if (!is.null(age3$correlation_age_cl$cn)) {
+    file_savename <- paste0("output/Figure-4B_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+    ggsave(age3$age_plot,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+    age3$age_plot<-age3$age_plot+stat_cor(method="pearson",size = 4, show.legend = F)
+    text_disp <- paste0(text_disp,
+                        "Centiloid by age association in CN: Pearson r - ",
+                        round(age3$correlation_age_cl$cn$estimate, 3),
+                        ", p-value - ",
+                        format.pval(age3$correlation_age_cl$cn$p.value, digits = 3),
+                        ".\n")
+    text_disp <- paste0(text_disp,
+                        "Centiloid by age association in Cognitively Impaired: Pearson r - ",
+                        round(age3$correlation_age_cl$patient$estimate, 3),
+                        ", p-value - ",
+                        format.pval(age3$correlation_age_cl$patient$p.value, digits = 3),
+                        ".\n")
+
+    model_age_cn<-lm(cl~age, data=subset(dataset,dataset$cdr==0))
+    text_disp <- paste0(text_disp,
+                      "Centiloid by age association in CN: intercept -  ",
+                      round(model_age_cn$coefficients[1], 3),
+                      ", slope - ",
+                      round(model_age_cn$coefficients[2], digits = 3),
+                      ", p-value - ",
+                      format.pval(summary(model_age_cn)$coefficient[2,4], digits = 3),
+                      ".\n")
+
+    model_age_pt<-lm(cl~age, data=subset(dataset,dataset$cdr!=0))
+    text_disp <- paste0(text_disp,
+                      "Centiloid by age association in patients: intercept -  ",
+                      round(model_age_pt$coefficients[1], 3),
+                      ", slope - ",
+                      round(model_age_pt$coefficients[2], digits = 3),
+                      ", p-value - ",
+                      format.pval(summary(model_age_pt)$coefficient[2,4], digits = 3),
+                      ".\n")
+  }
+}
+
+sex1<-plot_sex(dataset,cohort,'')
+file_savename <- paste0("output/Figure-5_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+ggsave(sex1$sex_plot,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+sex1$sex_plot<-sex1$sex_plot+stat_compare_means(aes(label = paste0("T-test p = ", after_stat(p.format))),method="t.test")
+
+text_disp <- paste0(text_disp,
+                    "Centiloid in males vs. females: T-value - ",
+                    round(sex1[["difference_sex_cl"]][["statistic"]][["t"]], 3),
+                    ", p-value - ",
+                    format.pval(sex1$difference_sex_cl$p.value, digits = 3),
+                    ".\n")
+
+if ("dx" %in% colnames(dataset)) {
+  sex2<-plot_sex(dataset,cohort,dataset$dx)
+  if (!is.null(sex2[["difference_sex_cl"]][["cn"]])) {
+    file_savename <- paste0("output/Figure-5A_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+    ggsave(sex2$sex_plot,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+    sex2$sex_plot<-sex2$sex_plot+stat_compare_means(aes(label = paste0("T-test p = ", after_stat(p.format))),method="t.test")
+    if (!is.null(sex2[["difference_sex_cl"]][["cn"]][["statistic"]][["t"]])){
+      text_disp <- paste0(text_disp,
+                        "Centiloid in males vs. females in CN: T-value - ",
+                        round(sex2[["difference_sex_cl"]][["cn"]][["statistic"]][["t"]], 3),
+                        ", p-value - ",
+                        format.pval(sex2$difference_sex_cl$cn$p.value, digits = 3),
+                        ".\n")}
+    if (!is.null(sex2[["difference_sex_cl"]][["patient"]][["statistic"]][["t"]])){
+    text_disp <- paste0(text_disp,
+                        "Centiloid in males vs. females in Cognitively Impaired: T-value - ",
+                        round(sex2[["difference_sex_cl"]][["patient"]][["statistic"]][["t"]], 3),
+                        ", p-value - ",
+                        format.pval(sex2$difference_sex_cl$patient$p.value, digits = 3),
+                        ".\n")}
+  }
+} else if ("cdr" %in% colnames(dataset)) {
+  sex3<-plot_sex(dataset,cohort,dataset$cdr)
+  if (!is.null(sex3[["difference_sex_cl"]][["cn"]])) {
+    file_savename <- paste0("output/Figure-5B_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+    ggsave(sex3$sex_plot,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+    sex3$sex_plot<-sex3$sex_plot+stat_compare_means(aes(label = paste0("T-test p = ", after_stat(p.format))),method="t.test")
+    if (!is.null(sex3[["difference_sex_cl"]][["cn"]][["statistic"]][["t"]])){
+    text_disp <- paste0(text_disp,
+                        "Centiloid in males vs. females in CN: T-value - ",
+                        round(sex3[["difference_sex_cl"]][["cn"]][["statistic"]][["t"]], 3),
+                        ", p-value - ",
+                        format.pval(sex3$difference_sex_cl$cn$p.value, digits = 3),
+                        ".\n")}
+     if (!is.null(sex3[["difference_sex_cl"]][["patient"]][["statistic"]][["t"]])){
+    text_disp <- paste0(text_disp,
+                        "Centiloid in males vs. females in Cognitively Impaired: T-value - ",
+                        round(sex3[["difference_sex_cl"]][["patient"]][["statistic"]][["t"]], 3),
+                        ", p-value - ",
+                        format.pval(sex3$difference_sex_cl$patient$p.value, digits = 3),
+                        ".\n")}
+  }
+}
+
+if ("dx" %in% colnames(dataset)) {
+  grid.arrange(grobs = list(age2$age_plot,sex2$sex_plot), ncol = 2, bottom = textGrob("Dx based on provided clinical diagnosis."))
+} else if ("cdr" %in% colnames(dataset)) {
+  grid.arrange(grobs = list(age3$age_plot,sex3$sex_plot), ncol = 2, bottom = textGrob("Dx based on CDR-total score (0 vs >=0.5.)"))
+} else {
+  grid.arrange(grobs = list(age1$age_plot,sex1$sex_plot), ncol = 2)
+}
+
+cat(text_disp)
+```
+
+
+#### Association with cognitive scores
+
+```{r cognition, echo=F, fig.keep='all', dpi = 600, fig.retina=1, fig.height=7, fig.width=10}
+# Centiloid to MMSE/CDR association with Pearson correlation test; Centiloid between CDR groups by ANOVA with Tukey HSD for pairwise
+
+source('code/cognition_plot.R')
+if ("mmse" %in% colnames(dataset)) {
+  mmse<-plot_mmse(dataset)
+  file_savename <- paste0("output/Figure-6_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+  ggsave(mmse$mmse_plot,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+  mmse$mmse_plot<-mmse$mmse_plot+stat_cor(method="pearson", size = 4, show.legend = F)
+  print(mmse$mmse_plot)
+
+  model_mmse<-lm(cl~mmse, data=dataset)
+  text_disp <- paste0("Centiloid by MMSE association: intercept -  ",
+                    round(model_mmse$coefficients[1], 3),
+                    ", slope - ",
+                    round(model_mmse$coefficients[2], digits = 3),
+                    ", p-value - ",
+                     format.pval(summary(model_mmse)$coefficient[2,4], digits = 3),
+                    ".\n\n")
+  cat(text_disp)
+}
+
+if ("cdr" %in% colnames(dataset)) {
+  cdr<-plot_cdr(dataset,cohort)
+  file_savename <- paste0("output/Figure-7_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+  ggsave(cdr$cdr_plot,filename=file_savename,dpi=600,width=10,height=10,units="cm")
+  cdr$cdr_plot<-cdr$cdr_plot+stat_compare_means(method = "anova", aes(label = paste0("ANOVA p = ", after_stat(p.format))))
+  print(cdr$cdr_plot)
+
+  text_disp <- paste0("Centiloid by CDR, Tukey HSD difference [p-value]:\n")
+  cat(text_disp)
+  print(cdr[["cdr_tukey"]])
+}
+
+```
+
+#### Association with APOE E4
+
+```{r apoe, echo=F, fig.keep='all', dpi = 600, fig.retina=1, fig.height=7, fig.width=10}
+# Centiloid between APOE groups by ANOVA with Tukey HSD for pairwise
+
+source("code/apoe_stats_plot.R")
+source("code/apoe_stats_dx.R")
+if ("apoe4_status" %in% colnames(dataset)) {
+  if (nrow(subset(dataset,is.na(dataset$apoe4_status)==F))!=0) {
+    apoe<-plot_apoe(dataset, cohort)
+    file_savename <- paste0("output/Figure-8A_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+    ggsave(apoe$apoe_plot,filename=file_savename,dpi=600,width=12,height=10,units="cm")
+    apoe$apoe_plot<-apoe$apoe_plot+
+      stat_compare_means(method = "anova", aes(label = paste0("ANOVA p = ", after_stat(p.format))))+
+      theme(axis.text.x = element_text(size = 12))
+    print(apoe$apoe_plot)
+
+    text_disp <- paste0("Centiloid by APOE4 status, Tukey HSD difference:\n")
+    cat(text_disp)
+    print(apoe[["apoe_tukey"]][["as.factor(apoe4_status)"]])
+  }
+
+    apoe_full<-plot_apoe_full(dataset, cohort)
+    file_savename <- paste0("output/Figure-8B_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".jpeg")
+    ggsave(apoe_full$apoe_plot,filename=file_savename,dpi=600,width=12,height=10,units="cm")
+    apoe_full$apoe_plot<-apoe_full$apoe_plot+stat_compare_means(method = "anova", aes(label = paste0("ANOVA p = ", after_stat(p.format))))
+    print(apoe_full$apoe_plot)
+    print(apoe_full[["apoe_tukey"]][["as.factor(apoe)"]])
+
+    if ("dx" %in% colnames(dataset)) {
+      apoe_stats_dx<-analyze_apoe_dx(dataset, dataset$dx)
+    } else if ("cdr" %in% colnames(dataset)) {
+      apoe_stats_dx<-analyze_apoe_dx(dataset, dataset$cdr)
+    }
+  }
+
+```
+
+## Summary
+
+```{r summary metrices, echo =F}
+source("metadata/table_list.R")
+# Aggregate results in the summary table and save in .csv
+for (tracer in unique(dataset$tracer)) {
+
+  #Demographics
+  n_tracer[[tracer]] <- length(dataset$id[dataset$tracer == tracer])
+  age_tracer[[tracer]] <- mean(dataset$age[dataset$tracer == tracer])
+  age_sd_tracer[[tracer]] <- sd(dataset$age[dataset$tracer == tracer])
+  male_tracer[[tracer]] <- sum(dataset$male[dataset$tracer == tracer])
+  n_vr_tracer[[tracer]] <- sum(!is.na(dataset$visual_read) & dataset$tracer == tracer)
+
+  if ("apoe4_status" %in% colnames(dataset)) {
+    n_apoe_tracer[[tracer]] <- sum(dataset$tracer == tracer & is.na(dataset$apoe4_status) == F)
+    n_apoe_non_c_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$apoe4_status == 'Non-Carrier' & is.na(dataset$apoe4_status) == F)
+    n_apoe_homo_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$apoe4_status == 'Homozygous-Carrier' & is.na(dataset$apoe4_status) == F)
+    n_apoe_hetero_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$apoe4_status == 'Heterozygous-Carrier' & is.na(dataset$apoe4_status) == F)
+    }
+
+   if ("dx" %in% colnames(dataset)) {
+      n_dx_tracer[[tracer]] <- sum(dataset$tracer == tracer & is.na(dataset$dx) == FALSE)
+      n_cn_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$dx == "CN" & is.na(dataset$dx) == FALSE)
+      n_mci_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$dx == "MCI" & is.na(dataset$dx) == FALSE)
+      n_dementia_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$dx == "Dementia" & is.na(dataset$dx) == FALSE) }
+
+    if ("cdr" %in% colnames(dataset)) {
+      n_cn_cdr_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$cdr == 0, na.rm=TRUE)
+      n_patient_cdr_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$cdr >= 0.5, na.rm=TRUE)
+    }
+
+  #Cognition
+  if ("cdr" %in% colnames(dataset)) {
+    n_cdr_tracer[[tracer]] <- sum(dataset$tracer == tracer & is.na(dataset$cdr) == FALSE)
+    cdr_mean_tracer[[tracer]] <- mean(dataset$cdr[dataset$tracer == tracer], na.rm = TRUE)
+    cdr_sd_tracer[[tracer]] <- sd(dataset$cdr[dataset$tracer == tracer], na.rm = TRUE)
+  }
+
+  if ("mmse" %in% colnames(dataset)) {
+    n_mmse_tracer[[tracer]] <- sum(dataset$tracer == tracer & is.na(dataset$mmse) == FALSE)
+    mmse_mean_tracer[[tracer]] <- mean(dataset$mmse[dataset$tracer == tracer], na.rm = TRUE)
+    mmse_sd_tracer[[tracer]] <- sd(dataset$mmse[dataset$tracer == tracer], na.rm = TRUE)
+  }
+
+  #GMM
+  gauss1_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$gmm$mu[1], error = function(e) NA)
+  gauss1_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[1]]$percent[4], error = function(e) NA)
+  gauss1_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[1]]$percent[5], error = function(e) NA)
+  gauss2_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$gmm$mu[2], error = function(e) NA)
+  gauss2_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[2]]$percent[4], error = function(e) NA)
+  gauss2_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[2]]$percent[5], error = function(e) NA)
+  gausssd1_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$gmm$sigma[1], error = function(e) NA)
+  gausssd1_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[3]]$percent[4], error = function(e) NA)
+  gausssd1_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[3]]$percent[5], error = function(e) NA)
+  gausssd2_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$gmm$sigma[2], error = function(e) NA)
+  gausssd2_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[4]]$percent[4], error = function(e) NA)
+  gausssd2_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[4]]$percent[5], error = function(e) NA)
+  cutoff_gmm_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$gmm$cutoff, error = function(e) NA)
+  cutoff_gmm_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[5]]$percent[4], error = function(e) NA)
+  cutoff_gmm_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[5]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_low_0p5_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_low[["0.5"]], error = function(e) NA)
+  cutoff_gmm_double_low_0p5_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[6]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_low_0p5_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[6]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_high_0p5_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_high[["0.5"]], error = function(e) NA)
+  cutoff_gmm_double_high_0p5_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[7]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_high_0p5_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[7]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_low_0p6_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_low[["0.6"]], error = function(e) NA)
+  cutoff_gmm_double_low_0p6_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[8]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_low_0p6_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[8]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_high_0p6_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_high[["0.6"]], error = function(e) NA)
+  cutoff_gmm_double_high_0p6_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[9]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_high_0p6_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[9]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_low_0p7_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_low[["0.7"]], error = function(e) NA)
+  cutoff_gmm_double_low_0p7_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[10]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_low_0p7_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[10]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_high_0p7_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_high[["0.7"]], error = function(e) NA)
+  cutoff_gmm_double_high_0p7_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[11]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_high_0p7_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[11]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_low_0p8_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_low[["0.8"]], error = function(e) NA)
+  cutoff_gmm_double_low_0p8_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[12]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_low_0p8_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[12]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_high_0p8_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_high[["0.8"]], error = function(e) NA)
+  cutoff_gmm_double_high_0p8_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[13]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_high_0p8_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[13]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_low_0p9_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_low[["0.9"]], error = function(e) NA)
+  cutoff_gmm_double_low_0p9_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[14]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_low_0p9_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[14]]$percent[5], error = function(e) NA)
+  cutoff_gmm_double_high_0p9_tracer[[tracer]] <- tryCatch(gmm_tracer[[tracer]]$cutoff_double_high[["0.9"]], error = function(e) NA)
+  cutoff_gmm_double_high_0p9_tracer_ci_low[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[15]]$percent[4], error = function(e) NA)
+  cutoff_gmm_double_high_0p9_tracer_ci_upp[[tracer]] <- tryCatch(boot_results_tracer[[tracer]][[15]]$percent[5], error = function(e) NA)
+
+  #VR
+  if ("visual_read" %in% colnames(dataset)) {
+    cutoff_kappa_tracer[[tracer]] <- tryCatch(vr_tracer[[tracer]]$cutoff_max_kappa, error = function(e) NA)
+    cutoff_kappa_tracer_ci_low[[tracer]] <- tryCatch(vr_tracer[[tracer]]$cutoff_max_kappa_ci[1], error = function(e) NA)
+    cutoff_kappa_tracer_ci_upp[[tracer]] <- tryCatch(vr_tracer[[tracer]]$cutoff_max_kappa_ci[2], error = function(e) NA)
+    kappa_tracer[[tracer]] <- tryCatch(vr_tracer[[tracer]]$kappa_calculated, error = function(e) NA)
+    kappa_tracer_ci_low[[tracer]] <- tryCatch(vr_tracer[[tracer]]$kappa_calculated_ci[1], error = function(e) NA)
+    kappa_tracer_ci_upp[[tracer]] <- tryCatch(vr_tracer[[tracer]]$kappa_calculated_ci[2], error = function(e) NA)
+    cutoff_youden_tracer[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_youden$threshold, error = function(e) NA)
+    cutoff_youden_tracer_ci_low[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_youden_ci$threshold[1], error = function(e) NA)
+    cutoff_youden_tracer_ci_upp[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_youden_ci$threshold[3], error = function(e) NA)
+    auc_roc_tracer[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$roc_curve$auc[1], error = function(e) NA)
+    auc_roc_tracer_ci_low[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$auc_ci[1], error = function(e) NA)
+    auc_roc_tracer_ci_upp[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$auc_ci[3], error = function(e) NA)
+    cutoff_95sens_tracer[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_95sens, error = function(e) NA)
+    cutoff_95sens_tracer_ci_low[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_95sens_ci$percent[4], error = function(e) NA)
+    cutoff_95sens_tracer_ci_upp[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_95sens_ci$percent[5], error = function(e) NA)
+    cutoff_95spec_tracer[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_95spec, error = function(e) NA)
+    cutoff_95spec_tracer_ci_low[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_95spec_ci$percent[4], error = function(e) NA)
+    cutoff_95spec_tracer_ci_upp[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_95spec_ci$percent[5], error = function(e) NA)
+    cutoff_90sens_tracer[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_90sens, error = function(e) NA)
+    cutoff_90sens_tracer_ci_low[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_90sens_ci$percent[4], error = function(e) NA)
+    cutoff_90sens_tracer_ci_upp[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_90sens_ci$percent[5], error = function(e) NA)
+    cutoff_90spec_tracer[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_90spec, error = function(e) NA)
+    cutoff_90spec_tracer_ci_low[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_90spec_ci$percent[4], error = function(e) NA)
+    cutoff_90spec_tracer_ci_upp[[tracer]] <- tryCatch(roc_tracer[[tracer]]$result_roc$cutoff_90spec_ci$percent[5], error = function(e) NA)
+    n_vr_positive_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$visual_read == 'positive', na.rm = TRUE)
+    n_vr_negative_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$visual_read == 'negative', na.rm = TRUE)
+  }
+
+
+  #CL raw
+  cl_male_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$male == 1], na.rm = TRUE)
+  cl_female_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$male == 0], na.rm = TRUE)
+  cl_sd_male_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$male == 1], na.rm = TRUE)
+  cl_sd_female_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$male == 0], na.rm = TRUE)
+
+  if ("apoe4_status" %in% colnames(dataset)) {
+    cl_apoe_non_c_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$apoe4_status == 'Non-Carrier'], na.rm = TRUE)
+    cl_sd_apoe_non_c_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$apoe4_status == 'Non-Carrier'], na.rm = TRUE)
+    cl_apoe_homo_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$apoe4_status == 'Homozygous-Carrier'], na.rm = TRUE)
+    cl_sd_apoe_homo_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$apoe4_status == 'Homozygous-Carrier'], na.rm = TRUE)
+    cl_apoe_hetero_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$apoe4_status == 'Heterozygous-Carrier'], na.rm = TRUE)
+    cl_sd_apoe_hetero_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$apoe4_status == 'Heterozygous-Carrier'], na.rm = TRUE)
+  }
+  if ("visual_read" %in% colnames(dataset)) {
+    cl_vr_positive_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$visual_read == 'positive'], na.rm = TRUE)
+    cl_sd_vr_positive_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$visual_read == 'positive'], na.rm = TRUE)
+    cl_vr_negative_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$visual_read == 'negative'], na.rm = TRUE)
+    cl_sd_vr_negative_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$visual_read == 'negative'], na.rm = TRUE)
+  }
+  if ("cdr" %in% colnames(dataset)) {
+    cl_cdr_0_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$cdr == 0], na.rm = TRUE)
+    cl_cdr_0p5_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$cdr == 0.5], na.rm = TRUE)
+    cl_cdr_more1_tracer[[tracer]] <- mean(dataset$cl[dataset$tracer == tracer & dataset$cdr >= 1], na.rm = TRUE)
+
+    cl_sd_cdr_0_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$cdr == 0], na.rm = TRUE)
+    cl_sd_cdr_0p5_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$cdr == 0.5], na.rm = TRUE)
+    cl_sd_cdr_more1_tracer[[tracer]] <- sd(dataset$cl[dataset$tracer == tracer & dataset$cdr >= 1], na.rm = TRUE)
+
+    cl_n_cdr_0_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$cdr == 0, na.rm = TRUE)
+    cl_n_cdr_0p5_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$cdr == 0.5, na.rm = TRUE)
+    cl_n_cdr_more1_tracer[[tracer]] <- sum(dataset$tracer == tracer & dataset$cdr >= 1, na.rm = TRUE)
+  }
+}
+
+
+Stats <- data.frame(
+  # Full cohort and unique tracers as columns
+  columns = c("Full Cohort", unique(dataset$tracer)),
+
+  # Demographics
+  n = c(length(dataset$id), unlist(n_tracer, use.names = FALSE)),
+  age_mean = c(mean(dataset$age), unlist(age_tracer, use.names = FALSE)),
+  age_sd = c(sd(dataset$age), unlist(age_sd_tracer, use.names = FALSE)),
+  male = c(sum(dataset$male), unlist(male_tracer, use.names = FALSE)),
+  vr_n = c(sum(!is.na(dataset$visual_read)), unlist(n_vr_tracer, use.names = FALSE)),
+  n_cu = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(sex2$group_counts[['cn']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(sex3$group_counts[['cn']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  n_ci = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(sex2$group_counts[['patient']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(sex3$group_counts[['patient']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  n_cu_male = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(sex2$n_male[['cn']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(sex3$n_male[['cn']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  n_cu_female = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(sex2$n_female[['cn']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(sex3$n_female[['cn']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  n_ci_male = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(sex2$n_male[['patient']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(sex3$n_male[['patient']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  n_ci_female = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(sex2$n_female[['patient']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(sex3$n_female[['patient']], rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+
+  # APOE4 status (if exists)
+  n_apoe = if ("apoe4_status" %in% colnames(dataset)) {
+    c(sum(!is.na(dataset$apoe4_status)), unlist(n_apoe_tracer, use.names = FALSE))
+  } else NA,
+  n_apoe_non_c = if ("apoe4_status" %in% colnames(dataset)) {
+    c(sum(dataset$apoe4_status == "Non-Carrier", na.rm = TRUE), unlist(n_apoe_non_c_tracer, use.names = FALSE))
+  } else NA,
+  n_apoe_homo = if ("apoe4_status" %in% colnames(dataset)) {
+    c(sum(dataset$apoe4_status == "Homozygous-Carrier", na.rm = TRUE), unlist(n_apoe_homo_tracer, use.names = FALSE))
+  } else NA,
+  n_apoe_hetero = if ("apoe4_status" %in% colnames(dataset)) {
+    c(sum(dataset$apoe4_status == "Heterozygous-Carrier", na.rm = TRUE), unlist(n_apoe_hetero_tracer, use.names = FALSE))
+  } else NA,
+  
+  n_apoe_non_cn = if ("apoe4_status" %in% colnames(dataset)) {
+    c(apoe_stats_dx$apoe_non_n[["cn"]], rep("-", length(unique(dataset$tracer))))
+  } else NA,
+  n_apoe_homo_cn = if ("apoe4_status" %in% colnames(dataset)) {
+    c(apoe_stats_dx$apoe_homo_n[["cn"]], rep("-", length(unique(dataset$tracer))))
+  } else NA,
+  n_apoe_hetero_cn = if ("apoe4_status" %in% colnames(dataset)) {
+    c(apoe_stats_dx$apoe_hetero_n[["cn"]], rep("-", length(unique(dataset$tracer))))
+  } else NA,
+  n_apoe_non_pt = if ("apoe4_status" %in% colnames(dataset)) {
+    c(apoe_stats_dx$apoe_non_n[["patient"]], rep("-", length(unique(dataset$tracer))))
+  } else NA,
+  n_apoe_homo_pt = if ("apoe4_status" %in% colnames(dataset)) {
+    c(apoe_stats_dx$apoe_homo_n[["patient"]], rep("-", length(unique(dataset$tracer))))
+  } else NA,
+  n_apoe_hetero_pt = if ("apoe4_status" %in% colnames(dataset)) {
+    c(apoe_stats_dx$apoe_hetero_n[["patient"]], rep("-", length(unique(dataset$tracer))))
+  } else NA,
+  
+
+  # Diagnosis (if exists)
+  n_dx = if ("dx" %in% colnames(dataset)) {
+    c(sum(!is.na(dataset$dx)), unlist(n_dx_tracer, use.names = FALSE))
+  } else NA,
+  n_cn = if ("dx" %in% colnames(dataset)) {
+    c(sum(dataset$dx == "CN", na.rm = TRUE), unlist(n_cn_tracer, use.names = FALSE))
+  } else NA,
+  n_mci = if ("dx" %in% colnames(dataset)) {
+    c(sum(dataset$dx == "MCI", na.rm = TRUE), unlist(n_mci_tracer, use.names = FALSE))
+  } else NA,
+  n_dementia = if ("dx" %in% colnames(dataset)) {
+    c(sum(dataset$dx == "Dementia", na.rm = TRUE), unlist(n_dementia_tracer, use.names = FALSE))
+  } else NA,
+
+  # CDR categories (if exists)
+  n_cdr = if ("cdr" %in% colnames(dataset)) {
+    c(sum(!is.na(dataset$cdr)), unlist(n_cdr_tracer, use.names = FALSE))
+  } else NA,
+  n_cn_cdr = if ("cdr" %in% colnames(dataset)) {
+    c(sum(dataset$cdr == 0, na.rm = TRUE), unlist(n_cn_cdr_tracer, use.names = FALSE))
+  } else NA,
+  n_patient_cdr = if ("cdr" %in% colnames(dataset)) {
+    c(sum(dataset$cdr >= 0.5, na.rm = TRUE), unlist(n_patient_cdr_tracer, use.names = FALSE))
+  } else NA,
+
+  # Cognition measures (if exists)
+
+  cdr_mean = if ("cdr" %in% colnames(dataset)) {
+    c(mean(dataset$cdr, na.rm = TRUE), unlist(cdr_mean_tracer, use.names = FALSE))
+  } else NA,
+  cdr_sd = if ("cdr" %in% colnames(dataset)) {
+    c(sd(dataset$cdr, na.rm = TRUE), unlist(cdr_sd_tracer, use.names = FALSE))
+  } else NA,
+
+  # MMSE measures (if exists)
+  n_mmse = if ("mmse" %in% colnames(dataset)) {
+    c(sum(!is.na(dataset$mmse)), unlist(n_mmse_tracer, use.names = FALSE))
+  } else NA,
+  mmse_mean = if ("mmse" %in% colnames(dataset)) {
+    c(mean(dataset$mmse, na.rm = TRUE), unlist(mmse_mean_tracer, use.names = FALSE))
+  } else NA,
+  mmse_sd = if ("mmse" %in% colnames(dataset)) {
+    c(sd(dataset$mmse, na.rm = TRUE), unlist(mmse_sd_tracer, use.names = FALSE))
+  } else NA,
+
+  # GMM parameters
+  gauss1=c(gmm$gmm$mu[1], unlist(gauss1_tracer,use.names=FALSE)),
+  gauss1_ci_low = c(boot_results[[1]]$percent[4], unlist(gauss1_tracer_ci_low, use.names = FALSE)),
+  gauss1_ci_upp = c(boot_results[[1]]$percent[5], unlist(gauss1_tracer_ci_upp, use.names = FALSE)),
+  gauss2 = c(gmm$gmm$mu[2], unlist(gauss2_tracer, use.names = FALSE)),
+  gauss2_ci_low = c(boot_results[[2]]$percent[4], unlist(gauss2_tracer_ci_low, use.names = FALSE)),
+  gauss2_ci_upp = c(boot_results[[2]]$percent[5], unlist(gauss2_tracer_ci_upp, use.names = FALSE)),
+  gausssd1 = c(gmm$gmm$sigma[1], unlist(gausssd1_tracer, use.names = FALSE)),
+  gausssd1_ci_low = c(boot_results[[3]]$percent[4], unlist(gausssd1_tracer_ci_low, use.names = FALSE)),
+  gausssd1_ci_upp = c(boot_results[[3]]$percent[5], unlist(gausssd1_tracer_ci_upp, use.names = FALSE)),
+  gausssd2 = c(gmm$gmm$sigma[2], unlist(gausssd2_tracer, use.names = FALSE)),
+  gausssd2_ci_low = c(boot_results[[4]]$percent[4], unlist(gausssd2_tracer_ci_low, use.names = FALSE)),
+  gausssd2_ci_upp = c(boot_results[[4]]$percent[5], unlist(gausssd2_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm = c(gmm$gmm$cutoff, unlist(cutoff_gmm_tracer, use.names = FALSE)),
+  cutoff_gmm_ci_low = c(boot_results[[5]]$percent[4], unlist(cutoff_gmm_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_ci_upp = c(boot_results[[5]]$percent[5], unlist(cutoff_gmm_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_low_0p5 = c(gmm$cutoff_double_low[["0.5"]], unlist(cutoff_gmm_double_low_0p5_tracer, use.names = FALSE)),
+  cutoff_gmm_double_low_0p5_ci_low = c(boot_results[[6]]$percent[4], unlist(cutoff_gmm_double_low_0p5_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_low_0p5_ci_upp = c(boot_results[[6]]$percent[5], unlist(cutoff_gmm_double_low_0p5_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_high_0p5 = c(gmm$cutoff_double_high[["0.5"]], unlist(cutoff_gmm_double_high_0p5_tracer, use.names = FALSE)),
+  cutoff_gmm_double_high_0p5_ci_low = c(boot_results[[7]]$percent[4], unlist(cutoff_gmm_double_high_0p5_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_high_0p5_ci_upp = c(boot_results[[7]]$percent[5], unlist(cutoff_gmm_double_high_0p5_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_low_0p6 = c(gmm$cutoff_double_low[["0.6"]], unlist(cutoff_gmm_double_low_0p6_tracer, use.names = FALSE)),
+  cutoff_gmm_double_low_0p6_ci_low = c(boot_results[[8]]$percent[4], unlist(cutoff_gmm_double_low_0p6_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_low_0p6_ci_upp = c(boot_results[[8]]$percent[5], unlist(cutoff_gmm_double_low_0p6_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_high_0p6 = c(gmm$cutoff_double_high[["0.6"]], unlist(cutoff_gmm_double_high_0p6_tracer, use.names = FALSE)),
+  cutoff_gmm_double_high_0p6_ci_low = c(boot_results[[9]]$percent[4], unlist(cutoff_gmm_double_high_0p6_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_high_0p6_ci_upp = c(boot_results[[9]]$percent[5], unlist(cutoff_gmm_double_high_0p6_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_low_0p7 = c(gmm$cutoff_double_low[["0.7"]], unlist(cutoff_gmm_double_low_0p7_tracer, use.names = FALSE)),
+  cutoff_gmm_double_low_0p7_ci_low = c(boot_results[[10]]$percent[4], unlist(cutoff_gmm_double_low_0p7_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_low_0p7_ci_upp = c(boot_results[[10]]$percent[5], unlist(cutoff_gmm_double_low_0p7_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_high_0p7 = c(gmm$cutoff_double_high[["0.7"]], unlist(cutoff_gmm_double_high_0p7_tracer, use.names = FALSE)),
+  cutoff_gmm_double_high_0p7_ci_low = c(boot_results[[11]]$percent[4], unlist(cutoff_gmm_double_high_0p7_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_high_0p7_ci_upp = c(boot_results[[11]]$percent[5], unlist(cutoff_gmm_double_high_0p7_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_low_0p8 = c(gmm$cutoff_double_low[["0.8"]], unlist(cutoff_gmm_double_low_0p8_tracer, use.names = FALSE)),
+  cutoff_gmm_double_low_0p8_ci_low = c(boot_results[[12]]$percent[4], unlist(cutoff_gmm_double_low_0p8_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_low_0p8_ci_upp = c(boot_results[[12]]$percent[5], unlist(cutoff_gmm_double_low_0p8_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_high_0p8 = c(gmm$cutoff_double_high[["0.8"]], unlist(cutoff_gmm_double_high_0p8_tracer, use.names = FALSE)),
+  cutoff_gmm_double_high_0p8_ci_low = c(boot_results[[13]]$percent[4], unlist(cutoff_gmm_double_high_0p8_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_high_0p8_ci_upp = c(boot_results[[13]]$percent[5], unlist(cutoff_gmm_double_high_0p8_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_low_0p9 = c(gmm$cutoff_double_low[["0.9"]], unlist(cutoff_gmm_double_low_0p9_tracer, use.names = FALSE)),
+  cutoff_gmm_double_low_0p9_ci_low = c(boot_results[[14]]$percent[4], unlist(cutoff_gmm_double_low_0p9_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_low_0p9_ci_upp = c(boot_results[[14]]$percent[5], unlist(cutoff_gmm_double_low_0p9_tracer_ci_upp, use.names = FALSE)),
+  cutoff_gmm_double_high_0p9 = c(gmm$cutoff_double_high[["0.9"]], unlist(cutoff_gmm_double_high_0p9_tracer, use.names = FALSE)),
+  cutoff_gmm_double_high_0p9_ci_low = c(boot_results[[15]]$percent[4], unlist(cutoff_gmm_double_high_0p9_tracer_ci_low, use.names = FALSE)),
+  cutoff_gmm_double_high_0p9_ci_upp = c(boot_results[[15]]$percent[5], unlist(cutoff_gmm_double_high_0p9_tracer_ci_upp, use.names = FALSE)),
+
+  # VR parameters (if exists)
+  cutoff_kappa = if ("visual_read" %in% colnames(dataset)) {
+    c(cutoff$optimal_cutpoint, unlist(cutoff_kappa_tracer, use.names = FALSE))
+  } else NA,
+  cutoff_kappa_ci_low = if ("visual_read" %in% colnames(dataset)) {
+    c(cutoff_max_kappa_ci[1], unlist(cutoff_kappa_tracer_ci_low, use.names = FALSE))
+  } else NA,
+  cutoff_kappa_ci_upp = if ("visual_read" %in% colnames(dataset)) {
+    c(cutoff_max_kappa_ci[2], unlist(cutoff_kappa_tracer_ci_upp, use.names = FALSE))
+  } else NA,
+  kappa = if ("visual_read" %in% colnames(dataset)) {
+    c(cutoff$cohens_kappa,unlist(kappa_tracer, use.names = FALSE))
+  } else NA,
+  kappa_ci_low = if ("visual_read" %in% colnames(dataset)) {
+    c(kappa_calculated_ci[1],unlist(kappa_tracer_ci_low, use.names = FALSE))
+  } else NA,
+  kappa_ci_upp = if ("visual_read" %in% colnames(dataset)) {
+    c(kappa_calculated_ci[2],unlist(kappa_tracer_ci_upp, use.names = FALSE))
+  } else NA,
+
+  cutoff_youden = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_youden$threshold,unlist(cutoff_youden_tracer, use.names = FALSE))
+  } else NA,
+  cutoff_youden_ci_low = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_youden_ci$threshold[1],unlist(cutoff_youden_tracer_ci_low, use.names = FALSE))
+  } else NA,
+  cutoff_youden_ci_upp = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_youden_ci$threshold[3],unlist(cutoff_youden_tracer_ci_upp, use.names = FALSE))
+  } else NA,
+  
+  auc_roc = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$roc_curve$auc[1],unlist(auc_roc_tracer, use.names = FALSE))
+  } else NA,
+  auc_roc_ci_low = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$auc_ci[1],unlist(auc_roc_tracer_ci_low, use.names = FALSE))
+  } else NA,
+  auc_roc_ci_upp = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$auc_ci[3],unlist(auc_roc_tracer_ci_upp, use.names = FALSE))
+  } else NA,
+  
+
+  cutoff_95sens = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_95sens,unlist(cutoff_95sens_tracer, use.names = FALSE))
+  } else NA,
+  cutoff_95sens_ci_low = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_95sens_ci$percent[4],unlist(cutoff_95sens_tracer_ci_low, use.names = FALSE))
+  } else NA,
+  cutoff_95sens_ci_upp = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_95sens_ci$percent[5],unlist(cutoff_95sens_tracer_ci_upp, use.names = FALSE))
+  } else NA,
+
+  cutoff_95spec = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_95spec,unlist(cutoff_95spec_tracer, use.names = FALSE))
+  } else NA,
+  cutoff_95spec_ci_low = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_95spec_ci$percent[4],unlist(cutoff_95spec_tracer_ci_low, use.names = FALSE))
+  } else NA,
+  cutoff_95spec_ci_upp = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_95spec_ci$percent[5],unlist(cutoff_95spec_tracer_ci_upp, use.names = FALSE))
+  } else NA,
+  
+  cutoff_90sens = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_90sens,unlist(cutoff_90sens_tracer, use.names = FALSE))
+  } else NA,
+  cutoff_90sens_ci_low = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_90sens_ci$percent[4],unlist(cutoff_90sens_tracer_ci_low, use.names = FALSE))
+  } else NA,
+  cutoff_90sens_ci_upp = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_90sens_ci$percent[5],unlist(cutoff_90sens_tracer_ci_upp, use.names = FALSE))
+  } else NA,
+
+  cutoff_90spec = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_90spec,unlist(cutoff_90spec_tracer, use.names = FALSE))
+  } else NA,
+  cutoff_90spec_ci_low = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_90spec_ci$percent[4],unlist(cutoff_90spec_tracer_ci_low, use.names = FALSE))
+  } else NA,
+  cutoff_90spec_ci_upp = if ("visual_read" %in% colnames(dataset)) {
+    c(result_roc$cutoff_90spec_ci$percent[5],unlist(cutoff_90spec_tracer_ci_upp, use.names = FALSE))
+  } else NA,
+
+  n_vr_positive = if ("visual_read" %in% colnames(dataset)) {
+    c(sum(dataset$visual_read=="positive", na.rm=TRUE),unlist(n_vr_positive_tracer, use.names = FALSE))
+  } else NA,
+  n_vr_negative = if ("visual_read" %in% colnames(dataset)) {
+    c(sum(dataset$visual_read=="negative", na.rm=TRUE),unlist(n_vr_negative_tracer, use.names = FALSE))
+  } else NA,
+
+  # CL in groups
+  cl_male_mean = c(mean(dataset$cl[dataset$male == 1], na.rm = TRUE), unlist(cl_male_tracer, use.names = FALSE)),
+  cl_female_mean = c(mean(dataset$cl[dataset$male == 0], na.rm = TRUE), unlist(cl_female_tracer, use.names = FALSE)),
+  cl_male_sd = c(sd(dataset$cl[dataset$male == 1], na.rm = TRUE), unlist(cl_sd_male_tracer, use.names = FALSE)),
+  cl_female_sd = c(sd(dataset$cl[dataset$male == 0], na.rm = TRUE), unlist(cl_sd_female_tracer, use.names = FALSE)),
+  
+  cl_cu_male_mean = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(round(sex2$mean_cl_male$cn[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(round(sex3$mean_cl_male$cn[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  cl_cu_female_mean = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(round(sex2$mean_cl_female$cn[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(round(sex3$mean_cl_female$cn[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  cl_cu_male_sd = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(round(sex2$sd_cl_male$cn[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(round(sex3$sd_cl_male$cn[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  cl_cu_female_sd = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(round(sex2$sd_cl_female$cn[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(round(sex3$sd_cl_female$cn[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  cl_ci_male_mean = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(round(sex2$mean_cl_male$patient[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(round(sex3$mean_cl_male$patient[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  cl_ci_female_mean = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(round(sex2$mean_cl_female$patient[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(round(sex3$mean_cl_female$patient[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  cl_ci_male_sd = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(round(sex2$sd_cl_male$patient[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(round(sex3$sd_cl_male$patient[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  cl_ci_female_sd = if (exists("sex2", envir = globalenv())) {
+    tryCatch(c(round(sex2$sd_cl_female$patient[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("sex3", envir = globalenv())) {
+    tryCatch(c(round(sex3$sd_cl_female$patient[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+
+  cl_apoe_non_c_mean = if ("apoe4_status" %in% colnames(dataset)) {
+    c(mean(dataset$cl[dataset$apoe4_status == 'Non-Carrier'], na.rm = TRUE), unlist(cl_apoe_non_c_tracer))
+  } else NA,
+  cl_apoe_non_c_sd = if ("apoe4_status" %in% colnames(dataset)) {
+    c(sd(dataset$cl[dataset$apoe4_status == 'Non-Carrier'], na.rm = TRUE), unlist(cl_sd_apoe_non_c_tracer))
+  } else NA,
+  cl_apoe_homo_mean = if ("apoe4_status" %in% colnames(dataset)) {
+    c(mean(dataset$cl[dataset$apoe4_status == 'Homozygous-Carrier'], na.rm = TRUE), unlist(cl_apoe_homo_tracer))
+  } else NA,
+  cl_apoe_homo_sd = if ("apoe4_status" %in% colnames(dataset)) {
+    c(sd(dataset$cl[dataset$apoe4_status == 'Homozygous-Carrier'], na.rm = TRUE), unlist(cl_sd_apoe_homo_tracer))
+  } else NA,
+  cl_apoe_hetero_mean = if ("apoe4_status" %in% colnames(dataset)) {
+    c(mean(dataset$cl[dataset$apoe4_status == 'Heterozygous-Carrier'], na.rm = TRUE), unlist(cl_apoe_hetero_tracer))
+  } else NA,
+  cl_apoe_hetero_sd = if ("apoe4_status" %in% colnames(dataset)) {
+    c(sd(dataset$cl[dataset$apoe4_status == 'Heterozygous-Carrier'], na.rm = TRUE), unlist(cl_sd_apoe_hetero_tracer))
+  } else NA,
+  
+  cl_apoe_cn_non_c_mean = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_non_mean_cl[["cn"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_cn_non_c_sd = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_non_sd_cl[["cn"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_cn_homo_mean = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_homo_mean_cl[["cn"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_cn_homo_sd = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_homo_sd_cl[["cn"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_cn_hetero_mean = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_hetero_mean_cl[["cn"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_cn_hetero_sd = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_hetero_sd_cl[["cn"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  cl_apoe_pt_non_c_mean = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_non_mean_cl[["patient"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_pt_non_c_sd = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_non_sd_cl[["patient"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_pt_homo_mean = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_homo_mean_cl[["patient"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_pt_homo_sd = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_homo_sd_cl[["patient"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_pt_hetero_mean = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_hetero_mean_cl[["patient"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  cl_apoe_pt_hetero_sd = if ("apoe4_status" %in% colnames(dataset)) {
+    tryCatch(c(round(apoe_stats_dx$apoe_hetero_sd_cl[["patient"]],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+
+  cl_vr_positive_mean = if ("visual_read" %in% colnames(dataset)) {
+    c(mean(dataset$cl[dataset$visual_read == 'positive'], na.rm = TRUE), unlist(cl_vr_positive_tracer))
+  } else NA,
+  cl_vr_positive_sd = if ("visual_read" %in% colnames(dataset)) {
+    c(sd(dataset$cl[dataset$visual_read == 'positive'], na.rm = TRUE), unlist(cl_sd_vr_positive_tracer))
+  } else NA,
+  cl_vr_negative_mean = if ("visual_read" %in% colnames(dataset)) {
+    c(mean(dataset$cl[dataset$visual_read == 'negative'], na.rm = TRUE), unlist(cl_vr_negative_tracer))
+  } else NA,
+  cl_vr_negative_sd = if ("visual_read" %in% colnames(dataset)) {
+    c(sd(dataset$cl[dataset$visual_read == 'negative'], na.rm = TRUE), unlist(cl_sd_vr_negative_tracer))
+  } else NA,
+
+  cl_n_cdr_0 = if ("cdr" %in% colnames(dataset)) {
+    c(sum(dataset$cdr == 0, na.rm = TRUE), unlist(cl_n_cdr_0_tracer))
+  } else NA,
+  cl_n_cdr_0p5 = if ("cdr" %in% colnames(dataset)) {
+    c(sum(dataset$cdr == 0.5, na.rm = TRUE), unlist(cl_n_cdr_0p5_tracer))
+  } else NA,
+  cl_n_cdr_more1 = if ("cdr" %in% colnames(dataset)) {
+    c(sum(dataset$cdr >= 1, na.rm = TRUE), unlist(cl_n_cdr_more1_tracer))
+  } else NA,
+
+
+  cl_cdr_0_mean = if ("cdr" %in% colnames(dataset)) {
+    c(mean(dataset$cl[dataset$cdr == 0], na.rm = TRUE), unlist(cl_cdr_0_tracer))
+  } else NA,
+  cl_cdr_0p5_mean = if ("cdr" %in% colnames(dataset)) {
+    c(mean(dataset$cl[dataset$cdr == 0.5], na.rm = TRUE), unlist(cl_cdr_0p5_tracer))
+  } else NA,
+  cl_cdr_more1_mean = if ("cdr" %in% colnames(dataset)) {
+    c(mean(dataset$cl[dataset$cdr >= 1], na.rm = TRUE), unlist(cl_cdr_more1_tracer))
+  } else NA,
+
+  cl_cdr_0_sd = if ("cdr" %in% colnames(dataset)) {
+    c(sd(dataset$cl[dataset$cdr == 0], na.rm = TRUE), unlist(cl_sd_cdr_0_tracer))
+  } else NA,
+  cl_cdr_0p5_sd = if ("cdr" %in% colnames(dataset)) {
+    c(sd(dataset$cl[dataset$cdr == 0.5], na.rm = TRUE), unlist(cl_sd_cdr_0p5_tracer))
+  } else NA,
+  cl_cdr_more1_sd = if ("cdr" %in% colnames(dataset)) {
+    c(sd(dataset$cl[dataset$cdr >= 1], na.rm = TRUE), unlist(cl_sd_cdr_more1_tracer))
+  } else NA,
+  
+  # Correlations
+  
+  r_age_cl = c(tryCatch(round(age1$correlation_age_cl$estimate[1],2), error = function(e) NA), rep("-", length(unique(dataset$tracer)))),
+  p_age_cl = c(tryCatch(round(age1$correlation_age_cl$p.value[1],2), error = function(e) NA), rep("-", length(unique(dataset$tracer)))),
+  
+  r_age_cl_cu = if (exists("age2", envir = globalenv())) {
+    tryCatch(c(round(age2$correlation_age_cl$cn$estimate[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("age3", envir = globalenv())) {
+    tryCatch(c(round(age3$correlation_age_cl$cn$estimate[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  p_age_cl_cu = if (exists("age2", envir = globalenv())) {
+    tryCatch(c(round(age2$correlation_age_cl$cn$p.value[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("age3", envir = globalenv())) {
+    tryCatch(c(round(age3$correlation_age_cl$cn$p.value[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  r_age_cl_ci = if (exists("age2", envir = globalenv())) {
+    tryCatch(c(round(age2$correlation_age_cl$patient$estimate[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("age3", envir = globalenv())) {
+    tryCatch(c(round(age3$correlation_age_cl$patient$estimate[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  p_age_cl_ci = if (exists("age2", envir = globalenv())) {
+    tryCatch(c(round(age2$correlation_age_cl$patient$p.value[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else if (exists("age3", envir = globalenv())) {
+    tryCatch(c(round(age3$correlation_age_cl$patient$p.value[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  
+  r_mmse_cl = if (exists("mmse", envir = globalenv())) {
+    tryCatch(c(round(mmse$correlation_mmse_cl$estimate[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA,
+  p_mmse_cl = if (exists("mmse", envir = globalenv())) {
+    tryCatch(c(round(mmse$correlation_mmse_cl$p.value[1],2), rep("-", length(unique(dataset$tracer)))), error = function(e) NA)
+  } else NA)
+
+
+colnames(Stats)<-c("-", "N","Age (mean, y)","Age (SD, y)","Sex (N male)", "Available visual read (N)",
+                   "Cognitively unimpaired (N)", "Cognitively impaired (N)", "Cognitively unimpaired male (N)", "Cognitively unimpaired female (N)",
+                   "Cognitively impaired male (N)", "Cognitively impaired female (N)", "Available APOE (N)",
+                   "APOE4 Non-Carriers (N)", "APOE4 Homozygous Carriers (N)", "APOE4 Heterozygous Carriers (N)",
+                   "APOE4 CU Non-Carriers (N)", "APOE4 CU Homozygous Carriers (N)", "APOE4 CU Heterozygous Carriers (N)",
+                   "APOE4 CI Non-Carriers (N)", "APOE4 CI Homozygous Carriers (N)", "APOE4 CI Heterozygous Carriers (N)",
+                   "Available Dx (N)","Controls (N)", "MCI (N)", "Dementia (N)", "Available CDR (N)", "Controls (CDR = 0, N)",
+                   "Patient (CDR >= 0.5, N)", "CDR (mean)", "CDR (SD)", "Available MMSE (N)", "MMSE (mean)",
+                   "MMSE (SD)", "G1 mean (CL)", "G1 mean 95%CI lower bound (CL)", "G1 mean 95%CI upper bound (CL)",
+                   "G2 mean (CL)", "G2 mean 95%CI lower bound (CL)", "G2 mean 95%CI upper bound (CL)", "G1 SD (CL)",
+                   "G1 SD 95%CI lower bound (CL)", "G1 SD 95%CI upper bound (CL)", "G2 SD (CL)", "G2 SD 95%CI lower bound (CL)",
+                   "G2 SD 95%CI upper bound (CL)", "GMM Cutoff (CL)", "GMM Cutoff 95%CI lower bound (CL)",
+                   "GMM Cutoff 95%CI upper bound (CL)", "GMM Cutoff Clearly Negative P=0.50 (CL)", "GMM Cutoff Clearly Negative P=0.50 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Negative P=0.50 95%CI upper bound (CL)","GMM Cutoff Clearly Positive P=0.50 (CL)", "GMM Cutoff Clearly Positive P=0.50 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Positive P=0.50 95%CI upper bound (CL)","GMM Cutoff Clearly Negative P=0.60 (CL)", "GMM Cutoff Clearly Negative P=0.60 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Negative P=0.60 95%CI upper bound (CL)","GMM Cutoff Clearly Positive P=0.60 (CL)", "GMM Cutoff Clearly Positive P=0.60 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Positive P=0.60 95%CI upper bound (CL)","GMM Cutoff Clearly Negative P=0.70 (CL)", "GMM Cutoff Clearly Negative P=0.70 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Negative P=0.70 95%CI upper bound (CL)","GMM Cutoff Clearly Positive P=0.70 (CL)", "GMM Cutoff Clearly Positive P=0.70 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Positive P=0.70 95%CI upper bound (CL)","GMM Cutoff Clearly Negative P=0.80 (CL)", "GMM Cutoff Clearly Negative P=0.80 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Negative P=0.80 95%CI upper bound (CL)","GMM Cutoff Clearly Positive P=0.80 (CL)", "GMM Cutoff Clearly Positive P=0.80 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Positive P=0.80 95%CI upper bound (CL)","GMM Cutoff Clearly Negative P=0.90 (CL)", "GMM Cutoff Clearly Negative P=0.90 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Negative P=0.90 95%CI upper bound (CL)","GMM Cutoff Clearly Positive P=0.90 (CL)", "GMM Cutoff Clearly Positive P=0.90 95%CI lower bound (CL)",
+                   "GMM Cutoff Clearly Positive P=0.90 95%CI upper bound (CL)",
+                   "Kappa-based Cutoff (CL)", "Kappa-based Cutoff 95%CI lower bound (CL)",
+                   "Kappa-based Cutoff 95%CI upper bound (CL)", "Max Kappa", "Max Kappa 95%CI lower bound",
+                   "Max Kappa 95%CI upper bound", "ROC-based Cutoff [Youden] (CL)",
+                   "ROC-based Cutoff [Youden] 95%CI lower bound (CL)", "ROC-based Cutoff [Youden] 95%CI upper bound (CL)",
+                   "ROC-based AUC", "ROC-based AUC 95% CI lower bound", "ROC-based AUC 95% CI upper bound",
+                   "ROC-based Cutoff [95%-sens] (CL)", "ROC-based Cutoff [95%-sens] 95%CI lower bound (CL)",
+                   "ROC-based Cutoff [95%-sens] 95%CI upper bound (CL)","ROC-based Cutoff [95%-spec] (CL)",
+                   "ROC-based Cutoff [95%-spec] 95%CI lower bound (CL)","ROC-based Cutoff [95%-spec] 95%CI upper bound (CL)",
+                   "ROC-based Cutoff [90%-sens] (CL)", "ROC-based Cutoff [90%-sens] 95%CI lower bound (CL)",
+                   "ROC-based Cutoff [90%-sens] 95%CI upper bound (CL)","ROC-based Cutoff [90%-spec] (CL)",
+                   "ROC-based Cutoff [90%-spec] 95%CI lower bound (CL)","ROC-based Cutoff [90%-spec] 95%CI upper bound (CL)",
+                   "Positive visual read (N)", "Negative visual read (N)", "CL in males (mean)", "CL in females (mean)",
+                   "CL in males (SD)", "CL in females (SD)", "CL in CU males (mean)", "CL in CU females (mean)",
+                   "CL in CU males (SD)", "CL in CU females (SD)", "CL in CI males (mean)", "CL in CI females (mean)",
+                   "CL in CI males (SD)", "CL in CI females (SD)","CL in APOE4 Non-Carriers (mean)", "CL in APOE4 Non-Carriers (SD)",
+                   "CL in APOE4 Homozygous Carriers (mean)", "CL in APOE4 Homozygous Carriers (SD)",
+                   "CL in APOE4 Heterozygous Carriers (mean)", "CL in APOE4 Heterozygous Carriers (SD)",
+                   "CL in CU APOE4 Non-Carriers (mean)", "CL in CU APOE4 Non-Carriers (SD)",
+                   "CL in CU APOE4 Homozygous Carriers (mean)", "CL in CU APOE4 Homozygous Carriers (SD)",
+                   "CL in CU APOE4 Heterozygous Carriers (mean)", "CL in CU APOE4 Heterozygous Carriers (SD)",
+                   "CL in CI APOE4 Non-Carriers (mean)", "CL in CI APOE4 Non-Carriers (SD)",
+                   "CL in CI APOE4 Homozygous Carriers (mean)", "CL in CI APOE4 Homozygous Carriers (SD)",
+                   "CL in CI APOE4 Heterozygous Carriers (mean)", "CL in CI APOE4 Heterozygous Carriers (SD)",
+                   "CL in positive visual read (mean)", "CL in positive visual read (SD)", "CL in negative visual read (mean)",
+                   "CL in negative visual read (SD)", "CDR=0 (N)", "CDR=0.5 (N)", "CDR>=1 (N)",
+                   "CL in CDR=0 (mean)", "CL in CDR=0.5 (mean)", "CL in CDR>=1 (mean)", "CL in CDR=0 (SD)",
+                   "CL in CDR=0.5 (SD)", "CL in CDR>=1 (SD)", "Correlation age-CL (rho)", "Correlation age-CL (p-value)", "Correlation age-CL in CU (rho)", 
+                   "Correlation age-CL in CU (p-value)", "Correlation age-CL in CI (rho)", "Correlation age-CL in CI (p-value)",
+                   "Correlation MMSE-CL (rho)", "Correlation MMSE-CL (p-value)")
+rownames(Stats) <- NULL
+Stats%>%
+  mutate(across(where(is.numeric), ~ round(., digits = 2))) %>%
+  t()%>%
+  kable(format = "html")%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = T)%>%
+  pack_rows("Cohort Description", 2, 12)%>%
+  pack_rows("Genetic Data", 13, 22)%>%
+  pack_rows("Clinical Data", 23, 34)%>%
+  pack_rows("GMM Results", 35, 79)%>%
+  pack_rows("Correspondence to Visual Read", 80, 105)%>%
+  pack_rows("Quantification by feature", 106, 148)%>%
+  pack_rows("Associations", 149, 156)%>%
+  row_spec(1, bold=T)
+
+file_savename <- paste0("output/Table_summary_", cohort, "_", format(Sys.Date(), "%Y-%m-%d"), ".csv")
+write.csv(Stats,file_savename, row.names = T)
+```
+
+This report was generated on `r format(Sys.time(), "%Y-%m-%d %H:%M:%S")`.
+Code created by Ganna Blazhenets; ganna.blazhenets @ ucsf.edu.
