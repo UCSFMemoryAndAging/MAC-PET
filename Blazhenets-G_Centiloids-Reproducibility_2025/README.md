@@ -1,6 +1,6 @@
 # Overview
 
-In this repository you will find the code distributes to the collaborators who agreed to supply the data for the centiloids meta-analysis in Blazhenets et al. 2025 [currently submitted for publication]. 
+In this repository you will find the code distributed to the collaborators who agreed to supply the data for the centiloids meta-analysis in Blazhenets et al. 2025 [currently submitted for publication]. 
 
 ## Licensing 
 
